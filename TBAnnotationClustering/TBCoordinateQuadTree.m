@@ -9,35 +9,74 @@
 #import "TBCoordinateQuadTree.h"
 #import "TBClusterAnnotation.h"
 
+//  旅馆信息的结构体
 typedef struct TBHotelInfo {
-    char* hotelName;
-    char* hotelPhoneNumber;
+    char* hotelName;  // 旅馆名称
+    char* hotelPhoneNumber;   // 旅馆电话号码
 } TBHotelInfo;
 
+
+/**
+ *  生成坐标点。即将旅馆信息 储存进 TBQuadTreeNodeData 结构体,包括旅馆经纬度、旅馆名称、旅馆电话
+ *
+ *  @param line  旅馆信息的字符串
+ *
+ *  @return   TBQuadTreeNodeData 结构体
+ */
 TBQuadTreeNodeData TBDataFromLine(NSString *line)
 {
     NSArray *components = [line componentsSeparatedByString:@","];
-    double latitude = [components[1] doubleValue];
-    double longitude = [components[0] doubleValue];
+    double latitude = [components[1] doubleValue];  //  纬度
+    double longitude = [components[0] doubleValue];  // 经度
 
-    TBHotelInfo* hotelInfo = malloc(sizeof(TBHotelInfo));
+    TBHotelInfo* hotelInfo = malloc(sizeof(TBHotelInfo)); // 申请分配空间
 
     NSString *hotelName = [components[2] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     hotelInfo->hotelName = malloc(sizeof(char) * hotelName.length + 1);
+    
+    
+    /*
+     char * strncpy( char *dest, char *src, size_t num );     (c/c++）复制src中的内容（字符，数字、汉字....）到dest，复制多少由num的值决定，返回指向dest的指针
+     说明：
+     如果n > dest串长度，dest栈空间溢出产生崩溃异常。
+     否则：
+     1）src串长度<=dest串长度,(这里的串长度包含串尾NULL字符)
+     如果n<src串长度，src的前n个字符复制到dest中。但是由于没有NULL字符，所以直接访问dest串会发生栈溢出的异常情况。
+     如果n = src串长度，与strcpy一致。
+     如果n >src串长度，src串存放于dest字串的[0,src串长度]，dest串的(src串长度, dest串长度]处存放NULL。
+     2）src串长度>dest串长度
+     如果n =dest串长度，则dest串没有NULL字符，会导致输出会有乱码。如果不考虑src串复制完整性，可以将dest 最后一字符置为NULL。
+     
+     综上，一般情况下，使用strncpy时，建议将n置为dest串长度（除非你将多个src串都复制到dest数组，并且从dest尾部反向操作)，复制完毕后，为保险起见，将dest串最后一字符置NULL，避免发生在第2)种情况下的输出乱码问题。当然喽，无论是strcpy还是strncpy，保证src串长度<dest串长度才是最重要的。
+     */
+    
+    //  通过strncpy 函数为结构体 赋值   旅馆名称
     strncpy(hotelInfo->hotelName, [hotelName UTF8String], hotelName.length + 1);
 
+    
     NSString *hotelPhoneNumber = [[components lastObject] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     hotelInfo->hotelPhoneNumber = malloc(sizeof(char) * hotelPhoneNumber.length + 1);
+    
+    // 旅馆电话
     strncpy(hotelInfo->hotelPhoneNumber, [hotelPhoneNumber UTF8String], hotelPhoneNumber.length + 1);
 
-    return TBQuadTreeNodeDataMake(latitude, longitude, hotelInfo);
+    return TBQuadTreeNodeDataMake(latitude, longitude, hotelInfo);   // 生成坐标
 }
 
+/**
+ *   利用地图区域  生成TBBoundingBox
+ *
+ *  @param mapRect   地图区域
+ *
+ *  @return   TBBoundingBox
+ */
 TBBoundingBox TBBoundingBoxForMapRect(MKMapRect mapRect)
 {
-    CLLocationCoordinate2D topLeft = MKCoordinateForMapPoint(mapRect.origin);
-    CLLocationCoordinate2D botRight = MKCoordinateForMapPoint(MKMapPointMake(MKMapRectGetMaxX(mapRect), MKMapRectGetMaxY(mapRect)));
+    //  从地图的区域得到 TBBoundingBox结构体的四个顶点
+    CLLocationCoordinate2D topLeft = MKCoordinateForMapPoint(mapRect.origin);//  地图的左上角  经纬度
+    CLLocationCoordinate2D botRight = MKCoordinateForMapPoint(MKMapPointMake(MKMapRectGetMaxX(mapRect), MKMapRectGetMaxY(mapRect))); // 地图的右下角经纬度
 
+    //  CLLocationDegrees    WGS 84坐标系下的坐标
     CLLocationDegrees minLat = botRight.latitude;
     CLLocationDegrees maxLat = topLeft.latitude;
 
@@ -47,6 +86,13 @@ TBBoundingBox TBBoundingBoxForMapRect(MKMapRect mapRect)
     return TBBoundingBoxMake(minLat, minLon, maxLat, maxLon);
 }
 
+/**
+ *  将TBBoundingBox 转化成地图上的区域
+ *
+ *  @param boundingBox    四叉树节点的区域
+ *
+ *  @return  MKMapRect  地图上的区域
+ */
 MKMapRect TBMapRectForBoundingBox(TBBoundingBox boundingBox)
 {
     MKMapPoint topLeft = MKMapPointForCoordinate(CLLocationCoordinate2DMake(boundingBox.x0, boundingBox.y0));
@@ -54,6 +100,7 @@ MKMapRect TBMapRectForBoundingBox(TBBoundingBox boundingBox)
 
     return MKMapRectMake(topLeft.x, botRight.y, fabs(botRight.x - topLeft.x), fabs(botRight.y - topLeft.y));
 }
+
 
 NSInteger TBZoomScaleToZoomLevel(MKZoomScale scale)
 {
@@ -87,21 +134,25 @@ float TBCellSizeForZoomScale(MKZoomScale zoomScale)
 
 @implementation TBCoordinateQuadTree
 
+/**
+ *  获取所有旅馆数据,将数据填充至四叉树节点
+ */
 - (void)buildTree
 {
     @autoreleasepool {
+        //  从USA-HotelMotel.csv文件中获取旅馆数据
         NSString *data = [NSString stringWithContentsOfFile:[[NSBundle mainBundle] pathForResource:@"USA-HotelMotel" ofType:@"csv"] encoding:NSASCIIStringEncoding error:nil];
         NSArray *lines = [data componentsSeparatedByString:@"\n"];
-
         NSInteger count = lines.count - 1;
-
+      
+        //
         TBQuadTreeNodeData *dataArray = malloc(sizeof(TBQuadTreeNodeData) * count);
         for (NSInteger i = 0; i < count; i++) {
             dataArray[i] = TBDataFromLine(lines[i]);
         }
 
         TBBoundingBox world = TBBoundingBoxMake(19, -166, 72, -53);
-        _root = TBQuadTreeBuildWithData(dataArray, count, world, 4);
+        _root = TBQuadTreeBuildWithData(dataArray, (int)count, world, 4);
     }
 }
 
